@@ -3,6 +3,7 @@
     using System;
     using System.Threading.Tasks;
     using global::Microsoft.Extensions.DependencyInjection;
+    using global::Microsoft.Extensions.Hosting;
     using KafkaFlow.Admin;
     using KafkaFlow.Admin.Messages;
     using KafkaFlow.Compressor;
@@ -15,144 +16,104 @@
 
     internal static class Program
     {
-        private static async Task Main()
+        public static async Task Main(string[] args)
         {
-            var services = new ServiceCollection();
+            await CreateHostBuilder(args).Build().RunAsync();
+        }
 
-            const string producerName = "PrintConsole";
+        public static IHostBuilder CreateHostBuilder(string[] args) =>
+            Host.CreateDefaultBuilder(args)
+                .ConfigureServices(
+                    (hostContext, services) =>
+                    {
+                        const string producerName = "PrintConsole";
 
-            const string consumerName = "test";
+                        const string consumerName = "test";
 
-            services.AddKafka(
-                kafka => kafka
-                    .UseConsoleLog()
-                    .AddCluster(
-                        cluster => cluster
-                            .WithBrokers(new[] { "localhost:9092" })
-                            .EnableAdminMessages("kafka-flow.admin", Guid.NewGuid().ToString())
-                            .AddProducer(
-                                producerName,
-                                producer => producer
-                                    .DefaultTopic("test-topic")
-                                    .AddMiddlewares(
-                                        middlewares => middlewares
-                                            .AddSerializer<ProtobufMessageSerializer>()
-                                            .AddCompressor<GzipMessageCompressor>()
-                                    )
-                                    .WithAcks(Acks.All)
-                            )
-                            .AddConsumer(
-                                consumer => consumer
-                                    .Topic("test-topic")
-                                    .WithGroupId("print-console-handler")
-                                    .WithName(consumerName)
-                                    .WithBufferSize(100)
-                                    .WithWorkersCount(20)
-                                    .WithAutoOffsetReset(AutoOffsetReset.Latest)
-                                    .AddMiddlewares(
-                                        middlewares => middlewares
-                                            .AddCompressor<GzipMessageCompressor>()
-                                            .AddSerializer<ProtobufMessageSerializer>()
-                                            .AddTypedHandlers(
-                                                handlers => handlers
-                                                    .WithHandlerLifetime(InstanceLifetime.Singleton)
-                                                    .AddHandler<PrintConsoleHandler>())
-                                    )
-                            )
-                    )
-            );
+                        services.AddScoped<FakeDependency>();
 
-            var provider = services.BuildServiceProvider();
+                        services.AddKafka(
+                            kafka => kafka
+                                .UseLogHandler<FakeLogHandler>()
+                                .AddCluster(
+                                    cluster => cluster
+                                        .WithBrokers(new[] { "localhost:9092" })
+                                        .EnableAdminMessages("kafka-flow.admin", Guid.NewGuid().ToString())
+                                        .AddProducer(
+                                            producerName,
+                                            producer => producer
+                                                .DefaultTopic("test-topic")
+                                                .AddMiddlewares(
+                                                    middlewares => middlewares
+                                                        .AddSerializer(
+                                                            r => r.Resolve<ProtobufMessageSerializer>(),
+                                                            r => r.Resolve<FakeResolver>())
+                                                        .AddCompressor<GzipMessageCompressor>()
+                                                )
+                                                .WithAcks(Acks.All)
+                                        )
+                                        .AddConsumer(
+                                            consumer => consumer
+                                                .Topic("test-topic")
+                                                .WithGroupId("print-console-handler")
+                                                .WithName(consumerName)
+                                                .WithBufferSize(100)
+                                                .WithWorkersCount(20)
+                                                .WithAutoOffsetReset(AutoOffsetReset.Latest)
+                                                .AddMiddlewares(
+                                                    middlewares => middlewares
+                                                        .AddCompressor<GzipMessageCompressor>()
+                                                        .AddSerializer<ProtobufMessageSerializer>()
+                                                        .AddTypedHandlers(
+                                                            handlers => handlers
+                                                                .WithHandlerLifetime(InstanceLifetime.Singleton)
+                                                                .AddHandler<PrintConsoleHandler>())
+                                                )
+                                        )
+                                )
+                        );
+                    })
+                .UseDefaultServiceProvider(
+                    options =>
+                    {
+                        options.ValidateScopes = true;
+                        options.ValidateOnBuild = true;
+                    });
+    }
 
-            var bus = provider.CreateKafkaBus();
+    public class FakeLogHandler : ILogHandler
+    {
+        private FakeDependency dependency;
 
-            await bus.StartAsync();
+        public FakeLogHandler(FakeDependency dependency)
+        {
+            this.dependency = dependency;
+        }
 
-            var consumers = provider.GetRequiredService<IConsumerAccessor>();
-            var producers = provider.GetRequiredService<IProducerAccessor>();
+        public void Error(string message, Exception ex, object data)
+        {
+        }
 
-            var adminProducer = provider.GetService<IAdminProducer>();
+        public void Info(string message, object data)
+        {
+        }
 
-            while (true)
-            {
-                Console.Write("Number of messages to produce, Pause, Resume, or Exit:");
-                var input = Console.ReadLine().ToLower();
+        public void Warning(string message, object data)
+        {
+        }
+    }
 
-                switch (input)
-                {
-                    case var _ when int.TryParse(input, out var count):
-                        for (var i = 0; i < count; i++)
-                        {
-                            producers[producerName]
-                                .Produce(
-                                    Guid.NewGuid().ToString(),
-                                    new TestMessage { Text = $"Message: {Guid.NewGuid()}" });
-                        }
+    public class FakeDependency
+    {
+    }
 
-                        break;
+    public class FakeResolver : DefaultMessageTypeResolver
+    {
+        private readonly ILogHandler logHandler;
 
-                    case "pause":
-                        foreach (var consumer in consumers.All)
-                        {
-                            consumer.Pause(consumer.Assignment);
-                        }
-
-                        Console.WriteLine("Consumer paused");
-
-                        break;
-
-                    case "resume":
-                        foreach (var consumer in consumers.All)
-                        {
-                            consumer.Resume(consumer.Assignment);
-                        }
-
-                        Console.WriteLine("Consumer resumed");
-
-                        break;
-
-                    case "reset":
-                        await adminProducer.ProduceAsync(new ResetConsumerOffset { ConsumerName = consumerName });
-
-                        break;
-
-                    case "rewind":
-                        Console.Write("Input a time: ");
-                        var timeInput = Console.ReadLine();
-
-                        if (DateTime.TryParse(timeInput, out var time))
-                        {
-                            adminProducer.ProduceAsync(
-                                new RewindConsumerOffsetToDateTime
-                                {
-                                    ConsumerName = consumerName,
-                                    DateTime = time
-                                });
-                        }
-
-                        break;
-
-                    case "workers":
-                        Console.Write("Input a new worker count: ");
-                        var workersInput = Console.ReadLine();
-
-                        if (int.TryParse(workersInput, out var workers))
-                        {
-                            await adminProducer.ProduceAsync(
-                                new ChangeConsumerWorkerCount
-                                {
-                                    ConsumerName = consumerName,
-                                    WorkerCount = workers
-                                });
-                        }
-
-                        break;
-
-                    case "exit":
-                        await bus.StopAsync();
-                        return;
-                }
-            }
+        public FakeResolver(ILogHandler logHandler)
+        {
+            this.logHandler = logHandler;
         }
     }
 }
