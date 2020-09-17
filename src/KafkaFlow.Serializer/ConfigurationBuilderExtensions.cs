@@ -13,11 +13,14 @@
         /// <typeparam name="TSerializer">A class that implements <see cref="IMessageSerializer"/></typeparam>
         /// <typeparam name="TResolver">A class that implements <see cref="IMessageTypeResolver"/></typeparam>
         public static IConsumerMiddlewareConfigurationBuilder AddSerializer<TSerializer, TResolver>(
-            this IConsumerMiddlewareConfigurationBuilder consumer)
+            this IConsumerMiddlewareConfigurationBuilder middlewares)
             where TSerializer : class, IMessageSerializer
             where TResolver : class, IMessageTypeResolver
         {
-            return consumer.AddSerializer(
+            middlewares.DependencyConfigurator.AddTransient<TResolver>();
+            middlewares.DependencyConfigurator.AddTransient<TSerializer>();
+
+            return middlewares.AddSerializer(
                 resolver => resolver.Resolve<TSerializer>(),
                 resolver => resolver.Resolve<TResolver>());
         }
@@ -37,15 +40,10 @@
             where TSerializer : class, IMessageSerializer
             where TResolver : class, IMessageTypeResolver
         {
-            middlewares.DependencyConfigurator.AddSingleton<IMessageSerializer, TSerializer>();
-            middlewares.DependencyConfigurator.AddSingleton<IMessageTypeResolver, TResolver>();
-            middlewares.DependencyConfigurator.AddSingleton<TSerializer>();
-            middlewares.DependencyConfigurator.AddSingleton<TResolver>();
-
             return middlewares.Add(
-                provider => new SerializerConsumerMiddleware(
-                    serializerFactory(provider),
-                    resolverFactory(provider)));
+                resolver => new SerializerConsumerMiddleware(
+                    serializerFactory(resolver),
+                    resolverFactory(resolver)));
         }
 
         /// <summary>
@@ -53,12 +51,14 @@
         /// </summary>
         /// <typeparam name="TSerializer">A class that implements <see cref="IMessageSerializer"/></typeparam>
         public static IConsumerMiddlewareConfigurationBuilder AddSerializer<TSerializer>(
-            this IConsumerMiddlewareConfigurationBuilder consumer)
+            this IConsumerMiddlewareConfigurationBuilder middlewares)
             where TSerializer : class, IMessageSerializer
         {
-            return consumer.AddSerializer(
+            middlewares.DependencyConfigurator.AddTransient<TSerializer>();
+
+            return middlewares.AddSerializer(
                 resolver => resolver.Resolve<TSerializer>(),
-                resolver => resolver.Resolve<DefaultMessageTypeResolver>());
+                resolver => new DefaultMessageTypeResolver());
         }
 
         /// <summary>
@@ -74,7 +74,7 @@
         {
             return consumer.AddSerializer(
                 serializerFactory,
-                resolver => resolver.Resolve<DefaultMessageTypeResolver>());
+                resolver => new DefaultMessageTypeResolver());
         }
 
         /// <summary>
@@ -87,6 +87,9 @@
             where TSerializer : class, IMessageSerializer
             where TResolver : class, IMessageTypeResolver
         {
+            producer.DependencyConfigurator.AddTransient<TResolver>();
+            producer.DependencyConfigurator.AddTransient<TSerializer>();
+
             return producer.AddSerializer(
                 resolver => resolver.Resolve<TSerializer>(),
                 resolver => resolver.Resolve<TResolver>());
@@ -107,15 +110,10 @@
             where TSerializer : class, IMessageSerializer
             where TResolver : class, IMessageTypeResolver
         {
-            producer.DependencyConfigurator.AddSingleton<IMessageSerializer, TSerializer>();
-            producer.DependencyConfigurator.AddSingleton<IMessageTypeResolver, TResolver>();
-            producer.DependencyConfigurator.AddSingleton<TSerializer>();
-            producer.DependencyConfigurator.AddSingleton<TResolver>();
-
             return producer.Add(
-                provider => new SerializerProducerMiddleware(
-                    serializerFactory(provider),
-                    resolverFactory(provider)));
+                resolver => new SerializerProducerMiddleware(
+                    serializerFactory(resolver),
+                    resolverFactory(resolver)));
         }
 
         /// <summary>
@@ -126,9 +124,11 @@
             this IProducerMiddlewareConfigurationBuilder producer)
             where TSerializer : class, IMessageSerializer
         {
+            producer.DependencyConfigurator.AddTransient<TSerializer>();
+
             return producer.AddSerializer(
                 resolver => resolver.Resolve<TSerializer>(),
-                resolver => resolver.Resolve<DefaultMessageTypeResolver>());
+                resolver => new DefaultMessageTypeResolver());
         }
 
         /// <summary>
@@ -144,7 +144,7 @@
         {
             return producer.AddSerializer(
                 serializerFactory,
-                resolver => resolver.Resolve<DefaultMessageTypeResolver>());
+                resolver => new DefaultMessageTypeResolver());
         }
 
         /// <summary>
