@@ -1,4 +1,9 @@
-﻿namespace KafkaFlow.Sample
+﻿using Autofac;
+using KafkaFlow.Autofac.DependencyInjection;
+using KafkaFlow.Configuration;
+using KafkaFlow.Serializer.NewtonsoftJson;
+
+namespace KafkaFlow.Sample
 {
     using System;
     using System.Threading.Tasks;
@@ -23,12 +28,15 @@
 
             const string consumerName = "test";
 
-            services.AddKafka(
-                kafka => kafka
-                    .UseConsoleLog()
-                    .AddCluster(
+            var containerBuilder = new ContainerBuilder();
+
+            var configurator = new KafkaFlowConfigurator(
+                    // Install KafkaFlow.Unity package
+                    new AutofacDependencyConfigurator(containerBuilder),
+                    kafka => kafka
+                       .AddCluster(
                         cluster => cluster
-                            .WithBrokers(new[] { "localhost:9092" })
+                            .WithBrokers(new[] { "host.docker.internal:32769" })
                             .EnableAdminMessages("kafka-flow.admin", Guid.NewGuid().ToString())
                             .AddProducer(
                                 producerName,
@@ -36,7 +44,7 @@
                                     .DefaultTopic("test-topic")
                                     .AddMiddlewares(
                                         middlewares => middlewares
-                                            .AddSerializer<ProtobufMessageSerializer>()
+                                            .AddSerializer<NewtonsoftJsonMessageSerializer>()
                                             .AddCompressor<GzipMessageCompressor>()
                                     )
                                     .WithAcks(Acks.All)
@@ -52,7 +60,7 @@
                                     .AddMiddlewares(
                                         middlewares => middlewares
                                             .AddCompressor<GzipMessageCompressor>()
-                                            .AddSerializer<ProtobufMessageSerializer>()
+                                            .AddSerializer<NewtonsoftJsonMessageSerializer>()
                                             .AddTypedHandlers(
                                                 handlers => handlers
                                                     .WithHandlerLifetime(InstanceLifetime.Singleton)
@@ -60,99 +68,24 @@
                                     )
                             )
                     )
-            );
+                );
 
-            var provider = services.BuildServiceProvider();
+            var container = containerBuilder.Build();
 
-            var bus = provider.CreateKafkaBus();
+            var bus = configurator.CreateBus(new AutofacDependencyResolver(container));
 
             await bus.StartAsync();
 
-            var consumers = provider.GetRequiredService<IConsumerAccessor>();
-            var producers = provider.GetRequiredService<IProducerAccessor>();
+            var producer1 = container.Resolve<IProducerAccessor>();
 
-            var adminProducer = provider.GetService<IAdminProducer>();
+            producer1[producerName].Produce(Guid.NewGuid().ToString(), new TestMessage()
+            { 
+                Text = "Test"
+            });
 
-            while (true)
-            {
-                Console.Write("Number of messages to produce, Pause, Resume, or Exit:");
-                var input = Console.ReadLine().ToLower();
-
-                switch (input)
-                {
-                    case var _ when int.TryParse(input, out var count):
-                        for (var i = 0; i < count; i++)
-                        {
-                            producers[producerName]
-                                .Produce(
-                                    Guid.NewGuid().ToString(),
-                                    new TestMessage { Text = $"Message: {Guid.NewGuid()}" });
-                        }
-
-                        break;
-
-                    case "pause":
-                        foreach (var consumer in consumers.All)
-                        {
-                            consumer.Pause(consumer.Assignment);
-                        }
-
-                        Console.WriteLine("Consumer paused");
-
-                        break;
-
-                    case "resume":
-                        foreach (var consumer in consumers.All)
-                        {
-                            consumer.Resume(consumer.Assignment);
-                        }
-
-                        Console.WriteLine("Consumer resumed");
-
-                        break;
-
-                    case "reset":
-                        await adminProducer.ProduceAsync(new ResetConsumerOffset { ConsumerName = consumerName });
-
-                        break;
-
-                    case "rewind":
-                        Console.Write("Input a time: ");
-                        var timeInput = Console.ReadLine();
-
-                        if (DateTime.TryParse(timeInput, out var time))
-                        {
-                            adminProducer.ProduceAsync(
-                                new RewindConsumerOffsetToDateTime
-                                {
-                                    ConsumerName = consumerName,
-                                    DateTime = time
-                                });
-                        }
-
-                        break;
-
-                    case "workers":
-                        Console.Write("Input a new worker count: ");
-                        var workersInput = Console.ReadLine();
-
-                        if (int.TryParse(workersInput, out var workers))
-                        {
-                            await adminProducer.ProduceAsync(
-                                new ChangeConsumerWorkerCount
-                                {
-                                    ConsumerName = consumerName,
-                                    WorkerCount = workers
-                                });
-                        }
-
-                        break;
-
-                    case "exit":
-                        await bus.StopAsync();
-                        return;
-                }
-            }
+            Console.WriteLine("Hello");
+            Console.ReadLine();
+            await bus.StopAsync();
         }
     }
 }
